@@ -1,0 +1,40 @@
+spec_version: 1
+name: hiring-coordinator-env
+version: "1.0.0"
+description: >
+  A policy-aware hiring coordinator environment where agents screen candidates,
+  build shortlists, rank recommendations, identify biased job-posting clauses,
+  schedule interviews, and send candidate communications.
+author: "Divyanshu Kumar"
+tags:
+  - openenv
+  - hiring
+  - recruitment
+  - candidate-screening
+  - responsible-ai
+type: space
+runtime: fastapi
+dockerfile: Dockerfile
+app: server:app
+port: 8000
+observation_type: json
+action_type: json
+reward_range:
+  - -1.0
+  - 1.0
+tasks:
+  - id: 1
+    name: Resume Screening
+    difficulty: easy
+    description: Screen 8 candidates for a job description and classify each as fit, maybe, or no_fit.
+    max_steps: 16
+  - id: 2
+    name: Screen, Shortlist, and Rank
+    difficulty: medium
+    description: Screen 12 candidates, shortlist the top 3, and submit a ranked recommendation list.
+    max_steps: 30
+  - id: 3
+    name: Full Hiring Pipeline
+    difficulty: hard
+    description: Screen 15 candidates, detect biased job-posting clauses, rank finalists, schedule interviews, and send finalist communications.
+    max_steps: 45
