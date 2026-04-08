@@ -4,7 +4,7 @@ All randomness is seeded — same seed = same episode every time.
 """
 from __future__ import annotations
 import random
-from models import Candidate, JobDescription, InterviewSlot
+from models import Candidate, InterviewQuestion, JobDescription, InterviewSlot
 
 # ---------------------------------------------------------------------------
 # Skill ontology
@@ -41,6 +41,72 @@ NEUTRAL_CLAUSES = [
     "Screening focuses on role-relevant skills, experience, work authorization, and availability",
     "Compensation discussions should stay within the published salary band",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Interview question domain constants
+# ---------------------------------------------------------------------------
+
+PROGRAMMING_LANGUAGES = {"Python", "Java", "Go", "Rust", "C++", "TypeScript", "SQL", "R"}
+
+QUESTION_BANK: list[InterviewQuestion] = [
+    InterviewQuestion(question_id="q_lang_python", domain="language", topic="Python",
+                      text="Explain Python's GIL and its impact on multi-threaded programs."),
+    InterviewQuestion(question_id="q_lang_java", domain="language", topic="Java",
+                      text="Describe how the JVM garbage collector works and when you would tune it."),
+    InterviewQuestion(question_id="q_lang_cpp", domain="language", topic="C++",
+                      text="Explain RAII and how smart pointers prevent memory leaks in C++."),
+    InterviewQuestion(question_id="q_lang_go", domain="language", topic="Go",
+                      text="Describe how goroutines and channels enable concurrency in Go."),
+    InterviewQuestion(question_id="q_lang_rust", domain="language", topic="Rust",
+                      text="Explain Rust's ownership model and how it guarantees memory safety."),
+    InterviewQuestion(question_id="q_lang_typescript", domain="language", topic="TypeScript",
+                      text="How does TypeScript's structural type system differ from nominal typing?"),
+    InterviewQuestion(question_id="q_os_linux", domain="os", topic="Linux",
+                      text="Explain Linux process scheduling and how cgroups limit resource usage."),
+    InterviewQuestion(question_id="q_os_windows", domain="os", topic="Windows",
+                      text="Describe the Windows registry architecture and its role in system configuration."),
+    InterviewQuestion(question_id="q_os_macos", domain="os", topic="macOS",
+                      text="How does macOS sandboxing and the App Sandbox protect system resources?"),
+    InterviewQuestion(question_id="q_dbms_postgresql", domain="dbms", topic="PostgreSQL",
+                      text="Explain MVCC in PostgreSQL and how it handles concurrent transactions."),
+    InterviewQuestion(question_id="q_dbms_mysql", domain="dbms", topic="MySQL",
+                      text="Compare InnoDB and MyISAM storage engines and when to use each."),
+    InterviewQuestion(question_id="q_dbms_mongodb", domain="dbms", topic="MongoDB",
+                      text="Describe MongoDB's document model and when denormalization is appropriate."),
+    InterviewQuestion(question_id="q_dbms_redis", domain="dbms", topic="Redis",
+                      text="Explain Redis data structures and persistence strategies for caching."),
+    InterviewQuestion(question_id="q_dbms_sqlite", domain="dbms", topic="SQLite",
+                      text="When is SQLite preferable to a client-server DBMS and what are its limitations?"),
+]
+
+QUESTION_BANK_MAP: dict[str, InterviewQuestion] = {q.question_id: q for q in QUESTION_BANK}
+
+
+def infer_os_proficiency(skills: list[str]) -> str:
+    """Deterministic OS assignment from visible skills."""
+    skill_set = set(skills)
+    if skill_set & {"Docker", "Kubernetes", "Go", "Rust", "AWS"}:
+        return "Linux"
+    if skill_set & {"React", "TypeScript"}:
+        return "macOS"
+    return "Linux"
+
+
+def infer_dbms_proficiency(skills: list[str]) -> str:
+    """Deterministic DBMS assignment from visible skills."""
+    skill_set = set(skills)
+    if "PostgreSQL" in skill_set:
+        return "PostgreSQL"
+    if "Redis" in skill_set:
+        return "Redis"
+    if "SQL" in skill_set:
+        return "MySQL"
+    return "MySQL"
+
+
+def generate_question_bank() -> list[InterviewQuestion]:
+    return list(QUESTION_BANK)
 
 
 # ---------------------------------------------------------------------------
@@ -205,15 +271,17 @@ def generate_candidate_pool(
             salary_expectation=sal_exp,
             true_fit_score=fit_score,
             true_label=score_to_label(fit_score),
+            os_proficiency=infer_os_proficiency(skills),
+            dbms_proficiency=infer_dbms_proficiency(skills),
         ))
 
     # Guarantee solvability: ensure at least 2 strong fits
     strong_fits = [c for c in candidates if c.true_label == "strong_fit"]
     if len(strong_fits) < 2:
-        # Patch first 2 candidates to be strong fits
         for j in range(min(2, pool_size)):
+            patched_skills = list(set(jd.required_skills + jd.preferred_skills))
             patched = candidates[j].model_copy(update={
-                "skills": list(set(jd.required_skills + jd.preferred_skills)),
+                "skills": patched_skills,
                 "years_experience": max(jd.min_experience_years + 1, 3),
                 "salary_expectation": (jd.salary_min + jd.salary_max) // 2,
             })
@@ -221,6 +289,8 @@ def generate_candidate_pool(
             candidates[j] = patched.model_copy(update={
                 "true_fit_score": recalculated_score,
                 "true_label": score_to_label(recalculated_score),
+                "os_proficiency": infer_os_proficiency(patched_skills),
+                "dbms_proficiency": infer_dbms_proficiency(patched_skills),
             })
 
     return candidates

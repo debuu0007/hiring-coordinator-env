@@ -1,12 +1,12 @@
 """
-Graders for all 3 hiring tasks.
+Graders for all hiring tasks.
 Each grader returns a float in [0.0, 1.0] and a breakdown dict.
 All functions are pure and deterministic.
 """
 from __future__ import annotations
 import math
 from models import Candidate, JobDescription
-from data_generator import BIASED_CLAUSE_TYPES
+from data_generator import BIASED_CLAUSE_TYPES, PROGRAMMING_LANGUAGES, QUESTION_BANK_MAP
 
 
 # ---------------------------------------------------------------------------
@@ -235,5 +235,142 @@ def grade_task3(
         "bias_tp": bias_tp, "bias_fp": bias_fp, "bias_fn": bias_fn,
         "schedule_score": round(schedule_score, 4),
         "comms_score": round(comms_score, 4),
+        "final": round(final_score, 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task 4 grader — Full pipeline + interview question selection
+# ---------------------------------------------------------------------------
+
+def _grade_interview_questions(
+    questions_asked: list[dict],
+    agent_shortlist: list[str],
+    candidates: list[Candidate],
+    jd: JobDescription,
+) -> tuple[float, dict]:
+    """
+    Grade interview question selection for shortlisted candidates.
+    Each shortlisted candidate should receive one question per domain
+    (language, os, dbms). Score averages across candidates x domains.
+    """
+    candidate_map = {c.id: c for c in candidates}
+    jd_skills = set(jd.required_skills) | set(jd.preferred_skills)
+
+    per_candidate: dict[str, dict[str, float]] = {cid: {} for cid in agent_shortlist}
+
+    for entry in questions_asked:
+        cid = entry.get("candidate_id")
+        qid = entry.get("question_id")
+        if cid not in per_candidate:
+            continue
+        question = QUESTION_BANK_MAP.get(qid)
+        if question is None:
+            continue
+        domain = question.domain
+        if domain in per_candidate[cid]:
+            continue
+
+        candidate = candidate_map.get(cid)
+        if candidate is None:
+            continue
+
+        if domain == "language":
+            candidate_langs = set(candidate.skills) & PROGRAMMING_LANGUAGES
+            if question.topic in candidate_langs:
+                score = 1.0
+                if question.topic in jd_skills:
+                    score = min(1.0, score + 0.25)
+            else:
+                score = 0.0
+        elif domain == "os":
+            score = 1.0 if question.topic == candidate.os_proficiency else 0.0
+        elif domain == "dbms":
+            score = 1.0 if question.topic == candidate.dbms_proficiency else 0.0
+        else:
+            score = 0.0
+
+        per_candidate[cid][domain] = score
+
+    total_checks = max(len(agent_shortlist) * 3, 1)
+    total_score = 0.0
+    for cid in agent_shortlist:
+        for domain in ("language", "os", "dbms"):
+            total_score += per_candidate.get(cid, {}).get(domain, 0.0)
+
+    interview_score = total_score / total_checks
+
+    return round(interview_score, 4), {
+        "interview_score": round(interview_score, 4),
+        "per_candidate": {
+            cid: per_candidate.get(cid, {}) for cid in agent_shortlist
+        },
+    }
+
+
+def grade_task4(
+    agent_decisions: dict[str, str],
+    agent_shortlist: list[str],
+    agent_ranking: list[str],
+    agent_bias_flags: list[dict],
+    interview_schedule: dict[str, str],
+    messages_sent: list[dict],
+    questions_asked: list[dict],
+    candidates: list[Candidate],
+    jd: JobDescription,
+) -> tuple[float, dict]:
+    """
+    Composite score:
+      20% screening F1
+      15% ranking NDCG@3
+      15% bias detection
+      10% scheduling
+      10% finalist communications
+      30% interview question selection
+    """
+    pipeline_score, pipeline_breakdown = grade_task3(
+        agent_decisions=agent_decisions,
+        agent_shortlist=agent_shortlist,
+        agent_ranking=agent_ranking,
+        agent_bias_flags=agent_bias_flags,
+        interview_schedule=interview_schedule,
+        messages_sent=messages_sent,
+        candidates=candidates,
+        jd=jd,
+    )
+
+    interview_score, interview_breakdown = _grade_interview_questions(
+        questions_asked=questions_asked,
+        agent_shortlist=agent_shortlist,
+        candidates=candidates,
+        jd=jd,
+    )
+
+    screen_score = pipeline_breakdown["screening_f1"]
+    rank_score = pipeline_breakdown["ranking_ndcg"]
+    bias_score = pipeline_breakdown["bias_score"]
+    schedule_score = pipeline_breakdown["schedule_score"]
+    comms_score = pipeline_breakdown["comms_score"]
+
+    final_score = (
+        0.20 * screen_score +
+        0.15 * rank_score +
+        0.15 * bias_score +
+        0.10 * schedule_score +
+        0.10 * comms_score +
+        0.30 * interview_score
+    )
+
+    return round(final_score, 4), {
+        "screening_f1": round(screen_score, 4),
+        "ranking_ndcg": round(rank_score, 4),
+        "bias_score": round(bias_score, 4),
+        "bias_tp": pipeline_breakdown["bias_tp"],
+        "bias_fp": pipeline_breakdown["bias_fp"],
+        "bias_fn": pipeline_breakdown["bias_fn"],
+        "schedule_score": round(schedule_score, 4),
+        "comms_score": round(comms_score, 4),
+        "interview_score": round(interview_score, 4),
+        "interview_per_candidate": interview_breakdown["per_candidate"],
         "final": round(final_score, 4),
     }

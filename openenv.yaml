@@ -38,3 +38,8 @@ tasks:
     difficulty: hard
     description: Screen 15 candidates, detect biased job-posting clauses, rank finalists, schedule interviews, and send finalist communications.
     max_steps: 45
+  - id: 4
+    name: Interview Question Selection
+    difficulty: hard
+    description: Run the full hiring pipeline, then select tailored interview questions (language, OS, DBMS) for each shortlisted candidate from a fixed question bank.
+    max_steps: 55

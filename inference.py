@@ -26,6 +26,7 @@ TASKS = {
     1: "resume-screening",
     2: "screen-shortlist-and-rank",
     3: "full-hiring-pipeline",
+    4: "full-pipeline-with-interview-questions",
 }
 
 ANALYSIS_SYSTEM_PROMPT = """
@@ -54,6 +55,7 @@ Valid action schemas:
 {"action_type":"schedule","candidate_id":"c_000","slot_id":"slot_000"}
 {"action_type":"send_message","candidate_id":"c_000","message_type":"invite|reject|schedule_confirm|waitlist"}
 {"action_type":"flag_bias","clause":"exact clause from jd.posting_clauses","bias_type":"gender|age|nationality|disability|vague"}
+{"action_type":"ask_question","candidate_id":"c_000","question_id":"q_lang_python"}
 {"action_type":"submit"}
 
 Use candidate names only as identifiers. Do not infer demographic traits from names, education,
@@ -93,6 +95,17 @@ Process instructions:
 - In the full pipeline, schedule only shortlisted candidates into unique available slots.
 - Send schedule_confirm or invite messages only to shortlisted candidates.
 - Use submit as the final action.
+
+Interview question instructions (Task 4 only):
+- For each shortlisted candidate, select exactly 3 questions from the question_bank: one language, one OS, one DBMS.
+- Language: pick a question whose topic matches a programming language in the candidate's skills.
+  Prefer the language that also appears in the JD required or preferred skills.
+- OS: infer the candidate's likely OS from their skills. Candidates with Docker, Kubernetes, Go, Rust, or AWS
+  typically use Linux. Candidates whose primary skills are React or TypeScript (without backend/infra skills)
+  may use macOS. Default to Linux for engineering roles.
+- DBMS: infer from skills. PostgreSQL in skills means PostgreSQL. Redis in skills means Redis.
+  SQL without a specific DB means MySQL. Default to MySQL.
+- Use ask_question actions with a valid question_id from the question_bank.
 """.strip()
 
 
@@ -145,6 +158,13 @@ def build_user_prompt(task_id: int, observation: dict[str, Any]) -> str:
             "from posting_clauses, shortlist and rank exactly the best 3 candidates, schedule "
             "those shortlisted candidates into unique slots, send schedule_confirm messages to "
             "scheduled candidates, then submit."
+        ),
+        4: (
+            "Do everything from Task 3 (screen, flag bias, shortlist, rank, schedule, messages), "
+            "then for each shortlisted candidate select 3 interview questions from the question_bank: "
+            "one language question matching a programming language in their skills (prefer JD languages), "
+            "one OS question matching their likely OS, and one DBMS question matching their likely DBMS. "
+            "Then submit."
         ),
     }
     return json.dumps(
@@ -213,6 +233,11 @@ def build_observation_summary(observation: dict[str, Any]) -> str:
         for slot in observation["available_slots"]:
             lines.append(f"- {slot['slot_id']}: {slot['datetime_str']} with {slot['interviewer_name']}")
 
+    if observation.get("question_bank"):
+        lines.extend(["", "Interview question bank:"])
+        for q in observation["question_bank"]:
+            lines.append(f"- {q['question_id']} [{q['domain']}] ({q['topic']}): {q['text']}")
+
     return "\n".join(lines)
 
 
@@ -232,18 +257,24 @@ def build_action_prompt(task_id: int, observation: dict[str, Any], analysis: dic
             "rank them best to worst, schedule those 3 into unique slots, send schedule_confirm messages "
             "to those 3, then submit."
         ),
+        4: (
+            "Create screen actions for every candidate, flag biased clauses, shortlist exactly the top 3, "
+            "rank them best to worst, schedule those 3 into unique slots, send schedule_confirm messages "
+            "to those 3, then for each shortlisted candidate submit 3 ask_question actions (one language, "
+            "one OS, one DBMS) using question_ids from the question bank, then submit."
+        ),
     }
-    return json.dumps(
-        {
-            "task_id": task_id,
-            "goal": action_goals[task_id],
-            "analysis": analysis,
-            "available_slots": observation.get("available_slots", []),
-            "valid_candidate_ids": [candidate["id"] for candidate in observation["candidates"]],
-            "instruction": "Return only a JSON array of action objects. Do not include rationale.",
-        },
-        ensure_ascii=True,
-    )
+    prompt_data: dict[str, Any] = {
+        "task_id": task_id,
+        "goal": action_goals[task_id],
+        "analysis": analysis,
+        "available_slots": observation.get("available_slots", []),
+        "valid_candidate_ids": [candidate["id"] for candidate in observation["candidates"]],
+        "instruction": "Return only a JSON array of action objects. Do not include rationale.",
+    }
+    if observation.get("question_bank"):
+        prompt_data["question_bank"] = observation["question_bank"]
+    return json.dumps(prompt_data, ensure_ascii=True)
 
 
 def extract_json_actions(text: str) -> list[dict[str, Any]]:
@@ -342,6 +373,47 @@ def classify_bias_clause(clause: str) -> str | None:
     return None
 
 
+PROGRAMMING_LANGS = {"Python", "Java", "Go", "Rust", "C++", "TypeScript", "SQL", "R"}
+
+
+def _infer_fallback_os(skills: list[str]) -> str:
+    skill_set = set(skills)
+    if skill_set & {"Docker", "Kubernetes", "Go", "Rust", "AWS"}:
+        return "Linux"
+    if skill_set & {"React", "TypeScript"}:
+        return "macOS"
+    return "Linux"
+
+
+def _infer_fallback_dbms(skills: list[str]) -> str:
+    skill_set = set(skills)
+    if "PostgreSQL" in skill_set:
+        return "PostgreSQL"
+    if "Redis" in skill_set:
+        return "Redis"
+    if "SQL" in skill_set:
+        return "MySQL"
+    return "MySQL"
+
+
+OS_QUESTION_MAP = {"Linux": "q_os_linux", "Windows": "q_os_windows", "macOS": "q_os_macos"}
+DBMS_QUESTION_MAP = {
+    "PostgreSQL": "q_dbms_postgresql", "MySQL": "q_dbms_mysql",
+    "MongoDB": "q_dbms_mongodb", "Redis": "q_dbms_redis", "SQLite": "q_dbms_sqlite",
+}
+LANG_QUESTION_MAP = {
+    "Python": "q_lang_python", "Java": "q_lang_java", "C++": "q_lang_cpp",
+    "Go": "q_lang_go", "Rust": "q_lang_rust", "TypeScript": "q_lang_typescript",
+}
+
+
+def _pick_lang_question(candidate_skills: list[str], jd_skills: set[str]) -> str | None:
+    candidate_langs = [s for s in candidate_skills if s in PROGRAMMING_LANGS]
+    jd_match = [lang for lang in candidate_langs if lang in jd_skills]
+    pick = (jd_match or candidate_langs or ["Python"])[0]
+    return LANG_QUESTION_MAP.get(pick)
+
+
 def fallback_actions(task_id: int, observation: dict[str, Any]) -> list[dict[str, Any]]:
     jd = observation["jd"]
     candidates = observation["candidates"]
@@ -353,7 +425,7 @@ def fallback_actions(task_id: int, observation: dict[str, Any]) -> list[dict[str
     top_ids = [candidate["id"] for candidate, _ in scored[:3]]
 
     actions: list[dict[str, Any]] = []
-    if task_id in (1, 2, 3):
+    if task_id in (1, 2, 3, 4):
         for candidate, score in scored:
             actions.append(
                 {
@@ -363,18 +435,18 @@ def fallback_actions(task_id: int, observation: dict[str, Any]) -> list[dict[str
                 }
             )
 
-    if task_id == 3:
+    if task_id in (3, 4):
         for clause in jd.get("posting_clauses", []):
             bias_type = classify_bias_clause(clause)
             if bias_type:
                 actions.append({"action_type": "flag_bias", "clause": clause, "bias_type": bias_type})
 
-    if task_id in (2, 3):
+    if task_id in (2, 3, 4):
         for candidate_id in top_ids:
             actions.append({"action_type": "shortlist", "candidate_id": candidate_id})
         actions.append({"action_type": "rank", "ordered_ids": top_ids})
 
-    if task_id == 3:
+    if task_id in (3, 4):
         for candidate_id, slot in zip(top_ids, observation.get("available_slots", [])):
             actions.append({"action_type": "schedule", "candidate_id": candidate_id, "slot_id": slot["slot_id"]})
         for candidate_id in top_ids:
@@ -386,6 +458,25 @@ def fallback_actions(task_id: int, observation: dict[str, Any]) -> list[dict[str
                 }
             )
 
+    if task_id == 4:
+        candidate_map = {c["id"]: c for c in candidates}
+        jd_skills = set(jd["required_skills"]) | set(jd["preferred_skills"])
+        for candidate_id in top_ids:
+            cand = candidate_map.get(candidate_id, {})
+            skills = cand.get("skills", [])
+
+            lang_qid = _pick_lang_question(skills, jd_skills)
+            if lang_qid:
+                actions.append({"action_type": "ask_question", "candidate_id": candidate_id, "question_id": lang_qid})
+
+            os_qid = OS_QUESTION_MAP.get(_infer_fallback_os(skills))
+            if os_qid:
+                actions.append({"action_type": "ask_question", "candidate_id": candidate_id, "question_id": os_qid})
+
+            dbms_qid = DBMS_QUESTION_MAP.get(_infer_fallback_dbms(skills))
+            if dbms_qid:
+                actions.append({"action_type": "ask_question", "candidate_id": candidate_id, "question_id": dbms_qid})
+
     actions.append({"action_type": "submit"})
     return actions
 
@@ -394,12 +485,14 @@ ALLOWED_ACTIONS_BY_TASK = {
     1: {"screen", "submit"},
     2: {"screen", "shortlist", "rank", "submit"},
     3: {"screen", "flag_bias", "shortlist", "rank", "schedule", "send_message", "submit"},
+    4: {"screen", "flag_bias", "shortlist", "rank", "schedule", "send_message", "ask_question", "submit"},
 }
 
 
 def normalize_actions(task_id: int, actions: list[dict[str, Any]], observation: dict[str, Any]) -> list[dict[str, Any]]:
     valid_candidate_ids = {candidate["id"] for candidate in observation["candidates"]}
     valid_slot_ids = {slot["slot_id"] for slot in observation.get("available_slots", [])}
+    valid_question_ids = {q["question_id"] for q in observation.get("question_bank", [])}
     allowed_actions = ALLOWED_ACTIONS_BY_TASK[task_id]
     normalized: list[dict[str, Any]] = []
     seen_shortlist: set[str] = set()
@@ -412,9 +505,11 @@ def normalize_actions(task_id: int, actions: list[dict[str, Any]], observation: 
             continue
 
         candidate_id = action.get("candidate_id")
-        if action_type in {"screen", "shortlist", "schedule", "send_message"} and candidate_id not in valid_candidate_ids:
+        if action_type in {"screen", "shortlist", "schedule", "send_message", "ask_question"} and candidate_id not in valid_candidate_ids:
             continue
         if action_type == "schedule" and action.get("slot_id") not in valid_slot_ids:
+            continue
+        if action_type == "ask_question" and action.get("question_id") not in valid_question_ids:
             continue
         if action_type == "shortlist":
             if candidate_id in seen_shortlist or len(seen_shortlist) >= 3:

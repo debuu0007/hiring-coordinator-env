@@ -11,7 +11,7 @@ tags:
 
 # Hiring Coordinator Env
 
-Hiring Coordinator Env is an OpenEnv-style real-world task simulation for evaluating agents on structured hiring coordination. The agent screens candidates, builds shortlists, ranks finalists, detects biased job-posting clauses, schedules interviews, and sends candidate communications across three tasks of increasing difficulty.
+Hiring Coordinator Env is an OpenEnv-style real-world task simulation for evaluating agents on structured hiring coordination. The agent screens candidates, builds shortlists, ranks finalists, detects biased job-posting clauses, schedules interviews, sends candidate communications, and selects tailored interview questions across four tasks of increasing difficulty.
 
 The design is intentionally deterministic: fixtures are generated from fixed seeds, hidden ground truth is used only by graders, and every grader returns a score in `[0.0, 1.0]`.
 
@@ -48,6 +48,7 @@ Deterministic graders.py + seeded data_generator.py
 | 1. Resume Screening | Easy | Screen 8 candidates as `fit`, `maybe`, or `no_fit`. | 16 | Positive-class F1 for strong-fit screening, with small partial credit for not rejecting strong fits. |
 | 2. Screen, Shortlist, and Rank | Medium | Screen 12 candidates, shortlist the top 3, and rank them best to worst. | 30 | 35% screening F1, 25% shortlist F1, and 40% NDCG@3. |
 | 3. Full Hiring Pipeline | Hard | Screen 15 candidates, flag biased job-posting clauses, shortlist/rank, schedule finalist interviews, and message finalists. | 45 | 30% screening, 25% ranking, 20% bias detection, 15% scheduling, and 10% finalist communications. |
+| 4. Interview Question Selection | Hard | Run the full pipeline, then select tailored interview questions (language, OS, DBMS) for each shortlisted candidate from a fixed question bank. | 55 | 20% screening, 15% ranking, 15% bias, 10% scheduling, 10% comms, and 30% interview question selection. |
 
 ## Observation Space
 
@@ -61,6 +62,8 @@ The public observation is JSON with:
 - `interview_schedule`: candidate IDs mapped to slot IDs.
 - `available_slots`: unbooked interview slots.
 - `messages_sent`: candidate communication history.
+- `question_bank`: fixed list of interview questions (Task 4 only), each with `question_id`, `domain`, `topic`, and `text`.
+- `interview_questions_asked`: questions already submitted by the agent.
 - `task_description`, `actions_taken`, `max_actions`, `task_id`, `done`.
 
 Hidden labels such as `true_fit_score`, `true_label`, and `biased_clauses` are not returned in public observations or public HTTP state. The internal Python `HiringEnv.state()` method retains hidden fields for deterministic local debugging and grading.
@@ -77,6 +80,7 @@ Actions are JSON objects with an `action_type` discriminator:
 {"action_type":"schedule","candidate_id":"c_000","slot_id":"slot_000"}
 {"action_type":"send_message","candidate_id":"c_000","message_type":"schedule_confirm"}
 {"action_type":"flag_bias","clause":"Recent graduate preferred","bias_type":"age"}
+{"action_type":"ask_question","candidate_id":"c_000","question_id":"q_lang_python"}
 {"action_type":"submit"}
 ```
 
@@ -171,4 +175,4 @@ Local status from this workspace:
 - `openenv.yaml` is present with metadata, task list, reward range, and Docker/HTTP entrypoint.
 - Root-level `inference.py` is present and uses the OpenAI client.
 - `Dockerfile` starts the FastAPI server on port `8000`.
-- 3 tasks include deterministic programmatic graders returning scores in `[0.0, 1.0]`.
+- 4 tasks include deterministic programmatic graders returning scores in `[0.0, 1.0]`.

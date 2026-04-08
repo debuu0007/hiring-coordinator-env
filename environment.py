@@ -7,20 +7,23 @@ from typing import Any
 from models import (
     Action, Observation, Reward, CandidateView,
     ScreenAction, ShortlistAction, RejectAction, RankAction,
-    ScheduleAction, SendMessageAction, FlagBiasAction, SubmitAction,
+    ScheduleAction, SendMessageAction, FlagBiasAction,
+    AskInterviewQuestionAction, SubmitAction,
 )
 from data_generator import (
     generate_jd, generate_candidate_pool, generate_interview_slots,
-    BIASED_CLAUSE_TYPES,
+    generate_question_bank, BIASED_CLAUSE_TYPES, PROGRAMMING_LANGUAGES,
+    QUESTION_BANK_MAP,
 )
-from graders import grade_task1, grade_task2, grade_task3
+from graders import grade_task1, grade_task2, grade_task3, grade_task4
 
 
 # Task config: pool_size, max_actions, plant_bias, require_schedule
 TASK_CONFIG = {
-    1: {"pool_size": 8, "max_actions": 16, "plant_bias": False, "require_schedule": False},
+    1: {"pool_size": 8,  "max_actions": 16, "plant_bias": False, "require_schedule": False},
     2: {"pool_size": 12, "max_actions": 30, "plant_bias": False, "require_schedule": False},
     3: {"pool_size": 15, "max_actions": 45, "plant_bias": True,  "require_schedule": True},
+    4: {"pool_size": 15, "max_actions": 55, "plant_bias": True,  "require_schedule": True},
 }
 
 TASK_DESCRIPTIONS = {
@@ -30,6 +33,12 @@ TASK_DESCRIPTIONS = {
         "Run the full hiring pipeline: screen 15 candidates, flag biased job-posting clauses, "
         "shortlist and rank the top 3, schedule them into unique slots, and send finalist messages."
     ),
+    4: (
+        "Run the full hiring pipeline (screen, bias flags, shortlist, rank, schedule, messages) "
+        "and then select 3 interview questions per shortlisted candidate — one language question, "
+        "one OS question, and one DBMS question — from the provided question bank. Choose questions "
+        "that match each candidate's technical profile."
+    ),
 }
 
 SHAPING_REWARD_SCALE = 0.2
@@ -37,7 +46,7 @@ SHAPING_REWARD_SCALE = 0.2
 
 class HiringEnv:
     def __init__(self, task_id: int = 1, seed: int = 42, domain: str = "engineering"):
-        assert task_id in (1, 2, 3), "task_id must be 1, 2, or 3"
+        assert task_id in (1, 2, 3, 4), "task_id must be 1, 2, 3, or 4"
         self.task_id = task_id
         self.seed = seed
         self.domain = domain
@@ -63,6 +72,7 @@ class HiringEnv:
             domain=self.domain,
         )
         self._slots = generate_interview_slots(n=6, seed=self.seed) if cfg["require_schedule"] else []
+        self._question_bank = generate_question_bank() if self.task_id == 4 else []
         self._max_actions = cfg["max_actions"]
 
         # Mutable state
@@ -73,6 +83,7 @@ class HiringEnv:
         self._schedule: dict[str, str] = {}           # candidate_id → slot_id
         self._messages: list[dict] = []
         self._bias_flags: list[dict] = []
+        self._interview_questions: list[dict] = []
         self._actions_taken = 0
         self._done = False
         self._cumulative_reward = 0.0
@@ -122,6 +133,7 @@ class HiringEnv:
             "schedule": self._schedule,
             "messages": self._messages,
             "bias_flags": self._bias_flags,
+            "interview_questions": self._interview_questions,
             "actions_taken": self._actions_taken,
             "max_actions": self._max_actions,
             "cumulative_reward": self._cumulative_reward,
@@ -147,6 +159,8 @@ class HiringEnv:
             return self._handle_message(action)
         elif isinstance(action, FlagBiasAction):
             return self._handle_bias_flag(action)
+        elif isinstance(action, AskInterviewQuestionAction):
+            return self._handle_ask_question(action)
         elif isinstance(action, SubmitAction):
             return self._handle_submit(action)
         else:
@@ -303,6 +317,48 @@ class HiringEnv:
             self._bias_flags.append({"clause": action.clause, "bias_type": action.bias_type})
             return -0.10, {"bias_flag": "false_positive", "clause": action.clause}
 
+    def _handle_ask_question(self, action: AskInterviewQuestionAction) -> tuple[float, dict]:
+        if self.task_id != 4:
+            return -0.05, {"error": "ask_question_not_available"}
+
+        if action.candidate_id not in self._shortlist:
+            return -0.05, {"penalty": "question_for_non_shortlisted"}
+
+        question = QUESTION_BANK_MAP.get(action.question_id)
+        if question is None:
+            return -0.05, {"error": "invalid_question_id"}
+
+        already_asked = any(
+            q["candidate_id"] == action.candidate_id and q["domain"] == question.domain
+            for q in self._interview_questions
+        )
+        if already_asked:
+            return -0.03, {"penalty": "duplicate_domain_question"}
+
+        self._interview_questions.append({
+            "candidate_id": action.candidate_id,
+            "question_id": action.question_id,
+            "domain": question.domain,
+        })
+
+        candidate = self._get_candidate(action.candidate_id)
+        if candidate is None:
+            return -0.05, {"error": "invalid_candidate_id"}
+
+        if question.domain == "language":
+            candidate_langs = set(candidate.skills) & PROGRAMMING_LANGUAGES
+            correct = question.topic in candidate_langs
+        elif question.domain == "os":
+            correct = question.topic == candidate.os_proficiency
+        elif question.domain == "dbms":
+            correct = question.topic == candidate.dbms_proficiency
+        else:
+            correct = False
+
+        r = +0.10 if correct else -0.05
+        tag = "correct_question" if correct else "mismatched_question"
+        return r, {"ask_question": tag, "candidate_id": action.candidate_id, "domain": question.domain}
+
     def _handle_submit(self, action: SubmitAction) -> tuple[float, dict]:
         self._done = True
         final_score, breakdown = self._compute_final_score()
@@ -322,7 +378,7 @@ class HiringEnv:
             score, breakdown = grade_task2(
                 self._screen_decisions, self._shortlist, self._ranking, self._candidates, top_k=3
             )
-        else:
+        elif self.task_id == 3:
             score, breakdown = grade_task3(
                 agent_decisions=self._screen_decisions,
                 agent_shortlist=self._shortlist,
@@ -330,6 +386,18 @@ class HiringEnv:
                 agent_bias_flags=self._bias_flags,
                 interview_schedule=self._schedule,
                 messages_sent=self._messages,
+                candidates=self._candidates,
+                jd=self._jd,
+            )
+        else:
+            score, breakdown = grade_task4(
+                agent_decisions=self._screen_decisions,
+                agent_shortlist=self._shortlist,
+                agent_ranking=self._ranking,
+                agent_bias_flags=self._bias_flags,
+                interview_schedule=self._schedule,
+                messages_sent=self._messages,
+                questions_asked=self._interview_questions,
                 candidates=self._candidates,
                 jd=self._jd,
             )
@@ -379,6 +447,8 @@ class HiringEnv:
             interview_schedule=dict(self._schedule),
             available_slots=[s for s in self._slots if not s.is_booked],
             messages_sent=list(self._messages),
+            question_bank=list(self._question_bank),
+            interview_questions_asked=list(self._interview_questions),
             actions_taken=self._actions_taken,
             max_actions=self._max_actions,
             task_id=self.task_id,

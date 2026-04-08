@@ -34,6 +34,15 @@ class Candidate(BaseModel):
     # Ground truth (hidden from agent observation)
     true_fit_score: float = Field(ge=0.0, le=1.0)
     true_label: Literal["strong_fit", "maybe", "no_fit"]
+    os_proficiency: str = "Linux"
+    dbms_proficiency: str = "MySQL"
+
+
+class InterviewQuestion(BaseModel):
+    question_id: str
+    domain: Literal["language", "os", "dbms"]
+    topic: str
+    text: str
 
 
 class InterviewSlot(BaseModel):
@@ -77,6 +86,8 @@ class Observation(BaseModel):
     interview_schedule: dict[str, str]       # candidate_id → slot_id
     available_slots: list[InterviewSlot]
     messages_sent: list[dict]                # {candidate_id, message_type}
+    question_bank: list[InterviewQuestion] = Field(default_factory=list)
+    interview_questions_asked: list[dict] = Field(default_factory=list)
     actions_taken: int
     max_actions: int
     task_id: int
@@ -127,6 +138,12 @@ class FlagBiasAction(BaseModel):
     bias_type: Literal["gender", "age", "nationality", "disability", "vague"]
 
 
+class AskInterviewQuestionAction(BaseModel):
+    action_type: Literal["ask_question"] = "ask_question"
+    candidate_id: str
+    question_id: str
+
+
 class SubmitAction(BaseModel):
     action_type: Literal["submit"] = "submit"
 
@@ -139,6 +156,7 @@ Action = (
     | ScheduleAction
     | SendMessageAction
     | FlagBiasAction
+    | AskInterviewQuestionAction
     | SubmitAction
 )
 

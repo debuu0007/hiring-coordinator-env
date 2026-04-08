@@ -8,6 +8,7 @@ import uvicorn
 
 from environment import HiringEnv
 from models import (
+    AskInterviewQuestionAction,
     FlagBiasAction,
     Observation,
     RankAction,
@@ -30,12 +31,13 @@ ACTION_MAP = {
     "schedule": ScheduleAction,
     "send_message": SendMessageAction,
     "flag_bias": FlagBiasAction,
+    "ask_question": AskInterviewQuestionAction,
     "submit": SubmitAction,
 }
 
 
 class ResetRequest(BaseModel):
-    task_id: int = Field(default=1, ge=1, le=3)
+    task_id: int = Field(default=1, ge=1, le=4)
     seed: int = 42
     domain: str = "engineering"
 
@@ -78,7 +80,7 @@ def public_state(state: dict[str, Any]) -> dict[str, Any]:
         {
             key: value
             for key, value in candidate.items()
-            if key not in {"true_fit_score", "true_label"}
+            if key not in {"true_fit_score", "true_label", "os_proficiency", "dbms_proficiency"}
         }
         for candidate in data.get("candidates", [])
     ]
