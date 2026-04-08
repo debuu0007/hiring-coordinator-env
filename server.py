@@ -93,6 +93,15 @@ def health() -> dict[str, str]:
     return {"status": "ok", "env": ENV_NAME}
 
 
+@app.get("/")
+def root() -> dict[str, str]:
+    return {
+        "name": ENV_NAME,
+        "status": "ok",
+        "message": "Hiring Coordinator OpenEnv is running. Use /health, /reset, /step, and /state.",
+    }
+
+
 @app.post("/reset")
 def reset(payload: ResetRequest | None = Body(default=None)) -> dict[str, Any]:
     config = payload or ResetRequest()
